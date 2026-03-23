@@ -1,0 +1,17 @@
+{
+  "feature_request": "We need a better way to track who is the right person to contact in each country.",
+  "variants": [
+    {
+      "label": "baseline",
+      "config": { "MIN_ROUNDS": 2, "MAX_ROUNDS": 5, "MAX_ASSUMPTIONS_PER_ROUND": 5 }
+    },
+    {
+      "label": "strict",
+      "config": { "MIN_ROUNDS": 4, "MAX_ROUNDS": 6, "MAX_ASSUMPTIONS_PER_ROUND": 5 }
+    },
+    {
+      "label": "narrow",
+      "config": { "MIN_ROUNDS": 2, "MAX_ROUNDS": 5, "MAX_ASSUMPTIONS_PER_ROUND": 3 }
+    }
+  ]
+}
