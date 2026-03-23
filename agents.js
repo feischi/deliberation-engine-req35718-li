@@ -30,7 +30,7 @@ async function callAgent(systemPrompt, messages) {
   const cleaned = raw.replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
 
   try {
-    return JSON.parse(cleaned);
+    return { result: JSON.parse(cleaned), usage: response.usage };
   } catch {
     throw new Error(`Agent returned non-JSON output:\n${raw}`);
   }
@@ -49,9 +49,9 @@ export async function runProposer(featureRequest, history, round) {
       : `The Critic has responded. This is round ${round}. Review the Critic's challenges and produce your updated proposal. Defend, revise, or concede each point with explicit reasoning.`;
 
   const messages = [...history, { role: "user", content: userMessage }];
-  const result = await callAgent(PROPOSER_SYSTEM_PROMPT, messages);
+  const { result, usage } = await callAgent(PROPOSER_SYSTEM_PROMPT, messages);
   result.round = round; // Ensure round is stamped even if model omits it
-  return { result, messages: [...messages, { role: "assistant", content: JSON.stringify(result) }] };
+  return { result, messages: [...messages, { role: "assistant", content: JSON.stringify(result) }], usage };
 }
 
 /**
@@ -77,7 +77,7 @@ Produce your Critic response.
 `.trim();
 
   const messages = [...history, { role: "user", content: userMessage }];
-  const result = await callAgent(CRITIC_SYSTEM_PROMPT, messages);
+  const { result, usage } = await callAgent(CRITIC_SYSTEM_PROMPT, messages);
   result.round = round;
 
   // Enforce minimum rounds — override model if it tries to satisfy early
@@ -87,7 +87,7 @@ Produce your Critic response.
     result._enforcement_note = `Satisfaction suppressed — minimum ${minRounds} rounds not reached.`;
   }
 
-  return { result, messages: [...messages, { role: "assistant", content: JSON.stringify(result) }] };
+  return { result, messages: [...messages, { role: "assistant", content: JSON.stringify(result) }], usage };
 }
 
 /**
@@ -112,8 +112,8 @@ ${transcript}
 Synthesize the final decision document.
 `.trim();
 
-  const result = await callAgent(SUMMARIZER_SYSTEM_PROMPT, [
+  const { result, usage } = await callAgent(SUMMARIZER_SYSTEM_PROMPT, [
     { role: "user", content: userMessage },
   ]);
-  return result;
+  return { result, usage };
 }

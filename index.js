@@ -3,11 +3,10 @@
 // Agents are in agents.js. Prompts are in prompts/agents.js. Config is in config.js.
 
 import "dotenv/config";
+import { fileURLToPath } from "url";
 import { DELIBERATION_CONFIG, EXAMPLES } from "./config.js";
 import { runProposer, runCritic, runSummarizer } from "./agents.js";
 import * as log from "./logger.js";
-
-const { MIN_ROUNDS, MAX_ROUNDS, DEFAULT_EXAMPLE, MAX_ASSUMPTIONS_PER_ROUND } = DELIBERATION_CONFIG;
 
 /**
  * Resolve the feature request from (in priority order):
@@ -28,8 +27,10 @@ function resolveFeatureRequest() {
   return { featureRequest: EXAMPLES[exampleKey] ?? EXAMPLES[DEFAULT_EXAMPLE], exampleKey };
 }
 
-async function deliberate() {
-  const { featureRequest, exampleKey } = resolveFeatureRequest();
+export async function deliberate(configOverrides = {}, inputOverride = null) {
+  const config = { ...DELIBERATION_CONFIG, ...configOverrides };
+  const { MIN_ROUNDS, MAX_ROUNDS, DEFAULT_EXAMPLE, MAX_ASSUMPTIONS_PER_ROUND } = config;
+  const { featureRequest, exampleKey } = inputOverride ?? resolveFeatureRequest();
 
   log.header("DELIBERATION ENGINE");
   log.info(`Feature Request: "${featureRequest}"`);
@@ -44,6 +45,7 @@ async function deliberate() {
 
   let criticSatisfied = false;
   let round = 0;
+  let totalTokens = 0;
 
   // ── Main Deliberation Loop ─────────────────────────────────────────────────
   while (!criticSatisfied && round < MAX_ROUNDS) {
@@ -52,17 +54,18 @@ async function deliberate() {
 
     // 1. Proposer turn
     log.info("Proposer is drafting...");
-    const { result: proposerOutput, messages: updatedProposerHistory } = await runProposer(
+    const { result: proposerOutput, messages: updatedProposerHistory, usage: proposerUsage } = await runProposer(
       featureRequest,
       proposerHistory,
       round
     );
     proposerHistory = updatedProposerHistory;
+    totalTokens += (proposerUsage?.input_tokens ?? 0) + (proposerUsage?.output_tokens ?? 0);
     log.agentOutput("PROPOSER", "blue", proposerOutput);
 
     // 2. Critic turn
     log.info("Critic is reviewing...");
-    const { result: criticOutput, messages: updatedCriticHistory } = await runCritic(
+    const { result: criticOutput, messages: updatedCriticHistory, usage: criticUsage } = await runCritic(
       featureRequest,
       proposerOutput,
       criticHistory,
@@ -70,6 +73,7 @@ async function deliberate() {
       MIN_ROUNDS
     );
     criticHistory = updatedCriticHistory;
+    totalTokens += (criticUsage?.input_tokens ?? 0) + (criticUsage?.output_tokens ?? 0);
     log.agentOutput("CRITIC", "magenta", criticOutput);
 
     // 3. Log scores for tension visibility
@@ -104,12 +108,37 @@ async function deliberate() {
   // ── Summarizer ─────────────────────────────────────────────────────────────
   log.header("SUMMARIZER — Synthesizing Final Document");
   log.info("Summarizer is reading the full transcript...");
-  const finalDocument = await runSummarizer(featureRequest, rounds);
+  const { result: finalDocument, usage: summarizerUsage } = await runSummarizer(featureRequest, rounds);
+  totalTokens += (summarizerUsage?.input_tokens ?? 0) + (summarizerUsage?.output_tokens ?? 0);
+
+  // ── Attach run metadata ────────────────────────────────────────────────────
+  const terminationReason = criticSatisfied ? "critic_satisfied" : "max_rounds_reached";
+  const perRoundScores = rounds.map((r, i) => ({
+    round: i + 1,
+    proposer_confidence: r.proposer.confidence ?? null,
+    critic_score: r.critic.proposal_score ?? null,
+  }));
+  const assumptionsByStatus = { proposed: 0, defended: 0, revised: 0, conceded: 0 };
+  for (const r of rounds) {
+    for (const a of (r.proposer.assumptions ?? [])) {
+      if (a.status in assumptionsByStatus) assumptionsByStatus[a.status]++;
+    }
+  }
+  const runMetadata = {
+    config_used: config,
+    rounds_taken: round,
+    termination_reason: terminationReason,
+    per_round_scores: perRoundScores,
+    assumptions_by_status: assumptionsByStatus,
+    total_tokens: totalTokens,
+  };
+  finalDocument.run_metadata = runMetadata;
+
   log.finalDocument(finalDocument);
 
   // ── Save output ────────────────────────────────────────────────────────────
   const transcriptFile = log.saveTranscript(exampleKey, featureRequest);
-  
+
   // Also save the decision document as JSON
   const { writeFileSync } = await import("fs");
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -124,12 +153,16 @@ async function deliberate() {
   log.header("DELIBERATION COMPLETE");
   log.info(`Rounds completed: ${round}`);
   log.info(`Termination: ${criticSatisfied ? "Critic satisfaction" : "Hard cap reached"}`);
+  log.info(`Total tokens used: ${totalTokens}`);
   log.info(`Recommendation: ${finalDocument.recommendation ?? "See document"}`);
+  return { finalDocument, runMetadata };
 }
 
 // ── Entry point ────────────────────────────────────────────────────────────
-deliberate().catch((err) => {
-  log.error(`Fatal error: ${err.message}`);
-  console.error(err);
-  process.exit(1);
-});
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  deliberate().catch((err) => {
+    log.error(`Fatal error: ${err.message}`);
+    console.error(err);
+    process.exit(1);
+  });
+}

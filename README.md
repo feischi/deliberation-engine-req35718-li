@@ -74,7 +74,7 @@ node index.js
 ## Output
 
 Every run produces two files in `output/`:
-- `run-<timestamp>.txt` — full deliberation transcript (console log without ANSI colors)
+- `<example_index>-run-<timestamp>.txt` — full deliberation transcript (console log without ANSI colors)
 - `<example_index>-decision-<timestamp>.json` — the final structured decision document
 
 ## File Structure
@@ -85,8 +85,9 @@ deliberation-engine/
 ├── agents.js             # API calls + JSON parsing per agent role
 ├── config.js             # Feature request resolution + tuning constants
 ├── logger.js             # Console output + transcript accumulation
-├── prompts/
-│   └── agents.js         # ALL agent system prompts (clearly separated)
+├── prompts.js            # ALL agent system prompts (clearly separated)
+├── compare.js            # Multi-variant comparison runner
+├── compare-config.json   # Comparison variant definitions
 ├── output/               # Run transcripts and decision documents
 ├── DECISIONS.md          # Architectural decisions and rationale
 ├── package.json
@@ -100,9 +101,54 @@ In `config.js`:
 | Constant | Default | Description |
 |---|---|---|
 | `MIN_ROUNDS` | 2 | Minimum deliberation rounds before Critic can satisfy |
-| `MAX_ROUNDS` | 6 | Hard cap — termination fallback if Critic never satisfies |
+| `MAX_ROUNDS` | 5 | Hard cap — termination fallback if Critic never satisfies |
+| `MAX_ASSUMPTIONS_PER_ROUND` | 5 | Max assumptions the Proposer may list per round |
 | `DEFAULT_EXAMPLE` | 1 | Which built-in example to use when no input is provided |
 
 ## Cost
 
-Uses `claude-haiku-4-5-20251001`. A typical 3-round deliberation costs approximately $0.01–0.03.
+Uses `claude-sonnet-4-6`. A typical 3-round deliberation costs approximately $0.01–0.03.
+
+## Comparison
+
+Run the same feature request through multiple config variants and compare results side-by-side.
+
+### Define variants in `compare-config.json`
+
+```json
+{
+  "feature_request": "We need a better way to track who is the right person to contact in each country.",
+  "variants": [
+    { "label": "baseline", "config": { "MIN_ROUNDS": 2, "MAX_ROUNDS": 5, "MAX_ASSUMPTIONS_PER_ROUND": 5 } },
+    { "label": "strict",   "config": { "MIN_ROUNDS": 3, "MAX_ROUNDS": 6, "MAX_ASSUMPTIONS_PER_ROUND": 5 } },
+    { "label": "narrow",   "config": { "MIN_ROUNDS": 2, "MAX_ROUNDS": 5, "MAX_ASSUMPTIONS_PER_ROUND": 3 } }
+  ]
+}
+```
+
+The `feature_request` field accepts a plain string or `{ "example": 1 }` to use a built-in example.
+
+### Run
+
+```bash
+node compare.js                          # uses ./compare-config.json
+node compare.js path/to/other-config.json
+```
+
+Variants run sequentially. Each produces its own `<label>-run-<timestamp>.txt` and `<label>-decision-<timestamp>.json` in `output/`. After all variants complete, a console table and `output/comparison-<timestamp>.md` report are saved.
+
+### Metrics compared
+
+| Metric | Description |
+|---|---|
+| Rounds taken | How many deliberation rounds ran |
+| Termination | `critic_satisfied` or `max_rounds_reached` |
+| Proposer confidence (final) | Proposer's self-reported confidence in the last round |
+| Critic score (final) | Critic's score of the proposal in the last round |
+| Confidence gap | `abs(proposer - critic)` — measures alignment |
+| Assumptions proposed / defended / revised / conceded | Assumption lifecycle across all rounds |
+| Open questions | Count of unresolved questions in the final document |
+| Total tokens | Sum of input + output tokens across all agent calls |
+| Recommendation | `proceed`, `proceed_with_caution`, or `hold_for_human_review` |
+
+Each decision document also contains a `run_metadata` field with the full per-round scores, assumption breakdown, config used, and total token count.
